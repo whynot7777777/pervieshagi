@@ -15,6 +15,7 @@
     --sh: #7d7d86,#fff,#7d7d86;
     --ease: cubic-bezier(.22,1,.36,1);
     --r: 20px
+    
 }
 
 [data-theme=light] {
