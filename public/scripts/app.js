@@ -1076,7 +1076,7 @@
             }
             async function enrollment() {
                 const rows = await api('/api/admin/enrollment');
-                $('#enrollment-list').innerHTML = rows.length ? rows.map(r => card(`<div><small>${esc(r.email)} · ${when(r.submitted_at)}</small><h3>${esc(r.full_name || 'Студент')}</h3><p>${esc(r.university || 'Место учёбы не указано')} · <a class="text-link" href="/api/admin/enrollment/${encodeURIComponent(r.submission_id)}/document" target="_blank" rel="noopener">Открыть ${esc(r.name)}</a></p></div><div class="acts"><button class="btn primary sm" data-enroll="approved" data-id="${esc(r.submission_id)}">Одобрить</button><button class="btn sm" data-enroll="rejected" data-id="${esc(r.submission_id)}">Отклонить</button></div>`)).join('') : '<p class="empty">Новых справок на проверку нет</p>';
+                $('#enrollment-list').innerHTML = rows.length ? rows.map(r => card(`<div><small>${esc(r.email)} · ${when(r.submitted_at)}</small><h3>${esc(r.full_name || 'Студент')}</h3><p>${esc(r.university || 'Место учёбы не указано')} · <button class="text-link" type="button" data-enrollment-doc="${esc(r.submission_id)}" data-name="${esc(r.name)}">Открыть ${esc(r.name)}</button></p></div><div class="acts"><button class="btn primary sm" data-enroll="approved" data-id="${esc(r.submission_id)}">Одобрить</button><button class="btn sm" data-enroll="rejected" data-id="${esc(r.submission_id)}">Отклонить</button></div>`)).join('') : '<p class="empty">Новых справок на проверку нет</p>';
             }
             let curT = null, pane = null, dq;
             const abox = $('#achat'), aform = $('#aform'), amsgs = $('#amsgs');
@@ -1115,6 +1115,14 @@
                 } catch (err) { fail(err); }
             });
             $('#aback').onclick = e => { e.preventDefault(); openThread(null); };
+            document.addEventListener('click', async e => {
+                const b = e.target.closest('[data-enrollment-doc]');
+                if (!b) return;
+                b.disabled = true;
+                try { await downloadPdf(`/api/admin/enrollment/${encodeURIComponent(b.dataset.enrollmentDoc)}/document`, b.dataset.name); }
+                catch (err) { fail(err); }
+                finally { b.disabled = false; }
+            });
             aform.addEventListener('submit', async e => {
                 e.preventDefault(); const t = aform.elements.text.value.trim(); if (!t) return; aform.elements.text.value = '';
                 try { await api(`/api/admin/support/${curT}/messages`, { method: 'POST', body: { text: t, reply_to: reply.get() } }); reply.clear(); await pane(false); threads(); } catch (err) { fail(err); aform.elements.text.value = t; }
