@@ -3,6 +3,7 @@
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const token = () => localStorage.getItem('token'), role = () => localStorage.getItem('role');
     const page = document.body.dataset.page;
+    if (localStorage.getItem('token')) document.getElementById('reg-btn')?.remove(); // залогинен — «Регистрация» не нужна, убираем сразу, без мерцания
     const cabinet = () => role() === 'admin' ? '/pages/admin.html' : '/pages/dashboard.html';
     const when = s => new Date(s).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     const ago = s => { const d = (Date.now() - new Date(s)) / 1000; return d < 60 ? 'только что' : d < 3600 ? Math.floor(d / 60) + ' мин назад' : d < 86400 ? Math.floor(d / 3600) + ' ч назад' : when(s); };
