@@ -6041,3 +6041,72 @@ a.stat-link:focus-visible, a.card-link:focus-visible {
 @media (max-width: 700px) {
     .vacancy-photo { height: 84px; }
 }
+
+
+/* =====================================================================
+   FLAT: без карточного стиля. Контент лежит прямо на фоне страницы,
+   секции отделяются тонкими линиями. Окна, меню и всплывашки не трогаем.
+   ===================================================================== */
+.card, .panel, .profile, .kcard, .direction-link, .react-hero-tools, .partner-card, .vacancy-card, .stat {
+    background: transparent !important;
+    background-image: none !important;
+    border: 0 !important;
+    border-top: 1px solid var(--line) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    transform: none !important;
+}
+
+    .card:hover, .panel:hover, .profile:hover, .kcard:hover, .direction-link:hover,
+    .partner-card:hover, .vacancy-card:hover, .stat:hover {
+        background: transparent !important;
+        box-shadow: none !important;
+        transform: none !important;
+        border-top-color: var(--text) !important;
+    }
+
+    /* свечение под курсором — часть карточного вида */
+    .card::before, .panel::before, .profile::before,
+    .card::after, .panel::after, .profile::after {
+        display: none !important;
+    }
+
+/* тёмная/светлая темы и мобильные правки не возвращают заливку */
+[data-theme=light] .card, [data-theme=light] .panel, [data-theme=light] .kcard,
+[data-theme=light] .partner-card, [data-theme=light] .vacancy-card {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+/* герой главной: без плавающих карточек текст занимает всю ширину */
+.hero-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+}
+
+    .hero-grid > div {
+        max-width: 860px;
+    }
+
+/* остатки карточного вида: плашки состояния и формы входа/регистрации */
+.partners-status, .match, .company-open-role {
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding-left: 0 !important;
+    min-height: 0 !important;
+}
+
+.form-card, .auth .card {
+    border-top: 0 !important;
+}
+
+/* списки карточек (вакансии, партнёры) — ровные строки с линиями */
+.vacancy-card, .partner-card, .card.vac {
+    padding-top: 22px !important;
+    padding-bottom: 22px !important;
+}
