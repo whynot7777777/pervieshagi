@@ -46,7 +46,7 @@
                 React.createElement('a', {
                     className: 'btn btn-light btn-sm react-action', href: copy.href, onClick: e => {
                     }
-                }, copy.action, '  ↗')
+                }, copy.action, '  ')
             )
         );
     }
