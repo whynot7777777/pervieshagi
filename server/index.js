@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { query, one, init } = require('./database');
 const { mailConfigured, sendMail } = require('./mailer');
+const { codeEmail } = require('./mail-template');
 const { prepare, score } = require('./match');
 const { directionOptions, categoriesFor, directionLinks } = require('./directions');
 
@@ -112,8 +113,8 @@ async function issueCode(uid, purpose, email) {
     const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
     const { id } = await one(`INSERT INTO email_codes (user_id, purpose, code_hash, expires_at)
         VALUES ($1,$2,$3, now() + interval '10 minutes') RETURNING id`, [uid, purpose, hashCode(uid, code)]);
-    const sent = await sendMail(email, purpose === 'verify' ? 'Код подтверждения — Первый шаг' : 'Сброс пароля — Первый шаг',
-        `Ваш код: ${code}\nОн действует 10 минут. Если это были не вы, просто проигнорируйте письмо.`);
+    const mail = codeEmail({ code, purpose: purpose === 'verify' ? 'verify' : 'reset', minutes: 10 });
+    const sent = await sendMail(email, purpose === 'verify' ? 'Код подтверждения — Первый шаг' : 'Сброс пароля — Первый шаг', mail.text, mail.html);
     if (sent) await query('DELETE FROM email_codes WHERE user_id = $1 AND purpose = $2 AND id < $3', [uid, purpose, id]);
     else await query('DELETE FROM email_codes WHERE id = $1', [id]);
     return sent;
