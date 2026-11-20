@@ -1,32 +1,53 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-const { SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, MAIL_FROM } = process.env;
-const secure = SMTP_SECURE === 'true';
-const transport = SMTP_HOST && SMTP_USER && SMTP_PASS && nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: Number(SMTP_PORT) || (secure ? 465 : 587),
-    secure,
-    requireTLS: !secure,
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 20000,
-    auth: { user: SMTP_USER, pass: SMTP_PASS }
-});
+// Берем ключ из .env
+const { RESEND_API_KEY } = process.env;
 
-exports.mailConfigured = Boolean(transport);
+// Проверяем, настроен ли ключ
+const mailConfigured = Boolean(RESEND_API_KEY);
+
+// Инициализируем Resend (только если ключ есть)
+const resend = mailConfigured ? new Resend(RESEND_API_KEY) : null;
+
+exports.mailConfigured = mailConfigured;
+
 exports.sendMail = async (to, subject, text) => {
-    if (!transport) return false;
+    if (!resend) {
+        console.log('⚠️ RESEND_API_KEY не настроен. Письмо не отправлено.');
+        console.log(`Кому: ${to}\nТема: ${subject}\nТекст:\n${text}`);
+        return false;
+    }
+
     try {
-        const result = await transport.sendMail({
-            from: MAIL_FROM || { name: 'Первый шаг', address: SMTP_USER },
-            to: { address: to },
-            subject,
-            text,
-            html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>Первый шаг</h2><p>${text.replace(/\n/g, '<br>')}</p></div>`
+        const { data, error } = await resend.emails.send({
+            // ВАЖНО: Пока не верифицируешь домен в Resend, 
+            // используй onboarding@resend.dev
+            from: 'Первый шаг <onboarding@resend.dev>',
+            to: [to],
+            subject: subject,
+            text: text,
+            html: `
+                <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
+                    <h2 style="color:#333;">Первый шаг</h2>
+                    <div style="font-size: 16px; margin: 20px 0;">
+                        ${text.replace(/\n/g, '<br>')}
+                    </div>
+                    <p style="color:#888;font-size:12px;margin-top:30px;">
+                        Если вы не запрашивали это письмо, просто проигнорируйте его.
+                    </p>
+                </div>
+            `
         });
-        return result.accepted.length > 0;
+
+        if (error) {
+            console.error('❌ Ошибка Resend:', error);
+            return false;
+        }
+
+        console.log(`✅ Письмо успешно отправлено на ${to} (ID: ${data.id})`);
+        return true; // Аналог result.accepted.length > 0 из старого кода
     } catch (err) {
-        console.error('Ошибка SMTP при отправке кода', err.code || err.name, err.responseCode || '');
+        console.error('❌ Критическая ошибка при отправке через Resend:', err);
         return false;
     }
 };
