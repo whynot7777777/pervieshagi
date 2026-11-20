@@ -322,6 +322,7 @@
         // ---- шапка, нижняя панель, баннер ----
         const ab = $('#auth-btn'), reg = $('#reg-btn'), links = $('.links');
         if (me) {
+            if (reg) reg.remove(); // залогиненному пользователю «Регистрация» не нужна ни на одной странице
             const home = page === 'home' || ['partners', 'about', 'directions', 'faq'].includes(page);
             const accLink = me.role === 'admin' ? '/pages/account.html#security' : '/pages/account.html#profile';
             const tabs = [...NAV[me.role], ['account', 'Аккаунт', accLink, 'user']];
