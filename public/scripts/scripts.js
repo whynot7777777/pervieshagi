@@ -2,45 +2,56 @@
     const root = document.documentElement;
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
     const $$ = s => [...document.querySelectorAll(s)];
-    // d: [фон тёмной, акцент], l: [фон светлой]
-    const PAL = [
-        { id: 'mono', name: 'Монохром', d: ['#050506', '#f1f1ef'], l: ['#f3f4f6'] },
-        { id: 'gold', name: 'Шампань', d: ['#0a0805', '#d9c28a'], l: ['#f5f0e5'] },
-        { id: 'sapphire', name: 'Сапфир', d: ['#04070f', '#8fb4ff'], l: ['#eef3fb'] },
-        { id: 'emerald', name: 'Изумруд', d: ['#030a07', '#7fe3b5'], l: ['#eef5f0'] },
-        { id: 'ruby', name: 'Бордо', d: ['#0b0406', '#ff8fa3'], l: ['#faf0f0'] },
-        { id: 'amethyst', name: 'Аметист', d: ['#07050d', '#c4a6ff'], l: ['#f3f0fa'] }
-    ];
-    const DEF = { mode: 'auto', palette: 'mono', halftone: true, density: 1, speed: 1, glow: 1, grain: true, radius: 20, font: 1, motion: true, respectOS: false };
+
+    // Header navigation uses native links. Handle them in capture phase so unrelated
+    // page-level bubbling handlers cannot accidentally swallow a click.
+    document.addEventListener('click', event => {
+        const link = event.target.closest && event.target.closest('.site-header .links a[href]');
+        if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const target = link.getAttribute('target');
+        if (target && target !== '_self') return;
+        const destination = new URL(link.href, window.location.href);
+        if (destination.origin !== window.location.origin) return;
+        event.preventDefault();
+        window.location.assign(destination.href);
+    }, true);
+    const DEF = { mode: 'dark', palette: 'mono', halftone: true, density: 1, speed: 1, glow: 1, grain: true, radius: 20, font: 1, motion: true, respectOS: false };
     let S = { ...DEF };
     try {
-        const saved = JSON.parse(localStorage.getItem('settings') || 'null');
-        if (saved) S = { ...DEF, ...saved }; else if (localStorage.getItem('theme')) S.mode = localStorage.getItem('theme');
-        if (saved && saved.halftone === undefined) S = { ...DEF, mode: S.mode, palette: 'mono', grain: false };
+        const legacy = JSON.parse(localStorage.getItem('settings') || 'null');
+        const savedTheme = localStorage.getItem('theme') || (legacy && legacy.mode);
+        if (savedTheme === 'light' || savedTheme === 'dark') S.mode = savedTheme;
     } catch { }
-    // Системная настройка «уменьшить движение» учитывается только если включить её в «Оформление и тема».
-    // Иначе при выключенных анимациях Windows не работают бегущая строка, смена слов и наклон карточки.
     const osReduce = () => !!S.respectOS && reducedMotion.matches;
-    const save = () => { try { localStorage.setItem('settings', JSON.stringify(S)); } catch { } };
-    const mq = matchMedia('(prefers-color-scheme: dark)');
+    const save = () => { try { localStorage.setItem('theme', S.mode); } catch { } };
     function apply() {
-        const dark = S.mode === 'auto' ? mq.matches : S.mode === 'dark';
-        root.dataset.theme = dark ? 'dark' : 'light'; root.dataset.palette = S.palette; root.dataset.motion = S.motion && !osReduce() ? 'on' : 'off'; root.dataset.osReduce = osReduce() ? 'on' : 'off';
-        root.style.setProperty('--gk', S.glow); root.style.setProperty('--r', S.radius + 'px'); root.style.setProperty('--fs', S.font);
-        root.style.setProperty('--grain', S.grain ? '' : '0');
+        const dark = S.mode === 'dark';
+        root.dataset.theme = dark ? 'dark' : 'light';
+        root.dataset.palette = 'mono';
+        root.dataset.motion = S.motion && !osReduce() ? 'on' : 'off';
+        root.dataset.osReduce = osReduce() ? 'on' : 'off';
+        root.style.setProperty('--gk', '1');
+        root.style.setProperty('--r', '20px');
+        root.style.setProperty('--fs', '1');
+        root.style.setProperty('--grain', '');
+        const toggle = document.getElementById('theme');
+        if (toggle) {
+            toggle.setAttribute('aria-label', dark ? 'Переключить на светлую тему' : 'Переключить на тёмную тему');
+            toggle.setAttribute('title', dark ? 'Светлая тема' : 'Тёмная тема');
+            toggle.setAttribute('aria-pressed', String(dark));
+        }
     }
-    mq.addEventListener('change', () => { if (S.mode === 'auto') apply(); });
     apply();
     root.classList.remove('no-js');
     let sync = () => { }, pc = () => { }, syncProfiles = () => { };
     let tm;
     reducedMotion.addEventListener('change', () => { apply(); pc(); syncProfiles(); });
-    const commit = () => { // плавная смена темы и палитры
+    const commit = () => {
         root.classList.add('theming'); clearTimeout(tm); tm = setTimeout(() => root.classList.remove('theming'), 800);
         apply(); save(); sync(); pc(); syncProfiles();
     };
-
     const tb = document.getElementById('theme');
+    if (tb) tb.onclick = () => { S.mode = S.mode === 'dark' ? 'light' : 'dark'; commit(); };
     const profileSlides = $$('[data-profile-slide]');
     let profileIndex = Math.max(0, profileSlides.findIndex(el => el.classList.contains('is-active')));
     let profileTimer = 0, profileFadeTimer = 0;
@@ -87,48 +98,6 @@
         c.style.setProperty('--mx', e.clientX - r.left + 'px'); c.style.setProperty('--my', e.clientY - r.top + 'px');
     });
 
-    // ---- панель настроек ----
-    const rg = (k, label, min, max, step) => `<label class="rg"><span>${label}<b data-out="${k}"></b></span><input type="range" min="${min}" max="${max}" step="${step}" data-key="${k}"></label>`;
-    const sw = (k, label) => `<label class="sw"><span>${label}</span><input type="checkbox" data-key="${k}"><i></i></label>`;
-    const ui = document.createElement('div'); ui.id = 'settings';
-    ui.innerHTML = `<div class="sbk"></div><aside class="sdrawer" aria-label="Настройки">
-    <div class="shead"><b>Настройки</b><button class="theme sclose" aria-label="Закрыть"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-    <div class="sbody">
-      <div class="sgroup"><h4>Режим</h4><div class="seg"><button data-v="dark">Тёмный</button><button data-v="light">Светлый</button><button data-v="auto">Авто</button></div></div>
-      <div class="sgroup"><h4>Цветовая палитра</h4><div class="pals">${PAL.map(p => `<button class="pal" data-v="${p.id}" style="--a:${p.d[0]};--b:${p.l[0]};--c:${p.d[1]}"><i></i>${p.name}</button>`).join('')}</div></div>
-      <div class="sgroup"><h4>Halftone</h4>${sw('halftone', 'Показывать halftone')}${rg('density', 'Плотность точек', .5, 1.8, .1)}${rg('speed', 'Реакция на движение', .3, 2.5, .1)}</div>
-      <div class="sgroup"><h4>Оформление</h4>${rg('glow', 'Яркость свечения', 0, 1.6, .1)}${rg('radius', 'Скругление углов', 6, 34, 1)}${rg('font', 'Размер текста', .9, 1.2, .05)}${sw('grain', 'Плёночное зерно')}${sw('motion', 'Плавные анимации')}${sw('respectOS', 'Учитывать системное «уменьшить движение»')}</div>
-    </div>
-    <div class="sfoot"><button class="btn sm" id="sreset">Сбросить настройки</button></div></aside>`;
-    document.body.appendChild(ui);
-    window.openSettings = () => ui.classList.add('open');
-    if (tb) {
-        tb.setAttribute('aria-label', 'Настройки темы и оформления');
-        tb.onclick = () => window.openSettings();
-    }
-    addEventListener('keydown', e => { if (e.key === 'Escape') ui.classList.remove('open'); });
-    const fmt = { density: v => Math.round(v * 100) + '%', speed: v => Math.round(v * 100) + '%', glow: v => Math.round(v * 100) + '%', radius: v => v + 'px', font: v => Math.round(v * 100) + '%' };
-    sync = () => {
-        ui.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.mode));
-        ui.querySelectorAll('.pal').forEach(b => b.classList.toggle('on', b.dataset.v === S.palette));
-        ui.querySelectorAll('input[data-key]').forEach(i => {
-            const v = S[i.dataset.key];
-            if (i.type === 'checkbox') i.checked = !!v;
-            else { i.value = v; const o = ui.querySelector(`[data-out="${i.dataset.key}"]`); if (o) o.textContent = fmt[i.dataset.key](+v); }
-        });
-    };
-    ui.addEventListener('click', e => {
-        const b = e.target.closest('.seg button, .pal');
-        if (b) { S[b.classList.contains('pal') ? 'palette' : 'mode'] = b.dataset.v; commit(); }
-        if (e.target.closest('.sbk, .sclose')) ui.classList.remove('open');
-        if (e.target.closest('#sreset')) { S = { ...DEF }; commit(); }
-    });
-    ui.addEventListener('input', e => {
-        const i = e.target; if (!i.dataset.key) return;
-        S[i.dataset.key] = i.type === 'checkbox' ? i.checked : Number(i.value); commit();
-    });
-    sync();
-
     // ---- анимированный полутон ----
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
@@ -161,9 +130,9 @@
                 context.beginPath();
                 for (let x = gap / 2; x < width; x += gap) {
                     const u = x / width;
-          const edge = Math.max(0, (u - .64) / .36, (.30 - u) / .30);
-                    if (!edge) continue;
-                    const ribbon = .45 + .22 * Math.sin(u * 8 + phase) + .12 * Math.sin(u * 14 - phase * .6);
+                    // Broad animated halftone ribbon across the viewport.
+                    const edge = .22 + .78 * Math.max(0, 1 - Math.abs(u - (.5 + .18 * Math.sin(phase * .7))) / .72);
+                    const ribbon = .48 + .22 * Math.sin(u * 5.4 + phase) + .10 * Math.sin(u * 11 - phase * .6);
                     for (let y = gap / 2; y < height; y += gap) {
                         const distance = Math.hypot(x - cursorPx, y - cursorPy);
                         const ripple = animate ? Math.sin(distance * .09 - time * .008) * Math.exp(-distance / 260) : 0;
@@ -194,7 +163,6 @@
         }, { passive: true });
         document.documentElement.addEventListener("pointerleave", () => { pointerX = pointerY = 0; });
         document.addEventListener("visibilitychange", pc);
-        mq.addEventListener("change", pc);
         if (home) {
             const wordmark = document.createElement('div');
             wordmark.className = 'halftone-wordmark';
@@ -289,7 +257,6 @@
         }
     });
 
-    document.querySelectorAll('.footer-settings').forEach(b => b.onclick = () => { window.openSettings(); ui.querySelector('.sclose').focus(); });
 
     // ---- анимированные счётчики ----
     const run = el => {

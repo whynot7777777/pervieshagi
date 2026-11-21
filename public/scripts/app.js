@@ -389,6 +389,33 @@
                 } finally { loading = false; more.disabled = false; partners.setAttribute('aria-busy', 'false'); }
             }
             more.onclick = retry.onclick = loadPartners; loadPartners();
+
+            // Подборка актуальных вакансий на главной странице.
+            const vacancyList = $('#home-vacancies-list');
+            if (vacancyList) {
+                fetch('/api/public/vacancies').then(r => {
+                    if (!r.ok) throw new Error('Вакансии временно недоступны');
+                    return r.json();
+                }).then(items => {
+                    const rows = Array.isArray(items) ? items.slice(0, 3) : [];
+                    if (!rows.length) {
+                        vacancyList.innerHTML = '<p class="partners-status">Новые вакансии скоро появятся. Загляни в каталог чуть позже.</p>';
+                        return;
+                    }
+                    vacancyList.innerHTML = rows.map(v => {
+                        const tags = [v.city, v.format, v.category, v.paid ? 'Оплачивается' : ''];
+                        return `<a class="home-vacancy-card" href="/pages/vacancy.html?id=${encodeURIComponent(v.id)}">
+                            <span class="home-vacancy-kicker">${esc(v.company || 'Компания-партнёр')}</span>
+                            <h3>${esc(v.title || 'Вакансия')}</h3>
+                            <p>${esc((v.description || '').replace(/<[^>]*>/g, ' ').slice(0, 150))}${(v.description || '').length > 150 ? '…' : ''}</p>
+                            <span class="home-vacancy-tags">${tags.filter(Boolean).map(x => `<i>${esc(String(x))}</i>`).join('')}</span>
+                            <span class="home-vacancy-link">Подробнее <b aria-hidden="true">→</b></span>
+                        </a>`;
+                    }).join('');
+                }).catch(() => {
+                    vacancyList.innerHTML = '<p class="partners-status">Не удалось загрузить вакансии. <a href="/pages/vacancies.html">Открыть каталог</a></p>';
+                }).finally(() => vacancyList.setAttribute('aria-busy', 'false'));
+            }
         }
 
         // ---- вход / регистрация ----
