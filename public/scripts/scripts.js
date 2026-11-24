@@ -166,7 +166,7 @@
         if (home) {
             const wordmark = document.createElement('div');
             wordmark.className = 'halftone-wordmark';
-            wordmark.textContent = 'Первый шаг';
+            wordmark.textContent = 'Первый опыт';
             document.body.appendChild(wordmark);
             setInterval(() => { wordmark.classList.remove('fly'); requestAnimationFrame(() => wordmark.classList.add('fly')); }, 180000);
             setTimeout(() => wordmark.classList.add('fly'), 9000);

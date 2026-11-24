@@ -7107,16 +7107,14 @@ input, select, textarea, .field, .input {
 
     .site-header .wrap,
     .site-header nav,
-    .site-header .links,
     .site-header .right {
         position: relative !important;
         z-index: 2 !important;
     }
 
     .site-header .links {
-        display: flex;
+        z-index: 2 !important;
         align-items: center;
-        gap: 26px;
         pointer-events: auto !important;
     }
 
@@ -7135,14 +7133,27 @@ input, select, textarea, .field, .input {
         z-index: 10000 !important;
     }
 
-@media (max-width: 1000px) {
+@media (min-width: 1001px) {
     .site-header .links {
-        z-index: 10001 !important;
+        position: relative !important;
+        display: flex;
+        gap: 26px;
+    }
+}
+
+@media (max-width: 1000px) {
+    .site-header .links:not(.open) {
+        display: none;
     }
 
-        .site-header .links.open {
-            display: flex;
-        }
+    .site-header .links.open {
+        display: flex;
+        position: fixed !important;
+        top: 68px;
+        left: 0;
+        right: 0;
+        z-index: 10001 !important;
+    }
 }
 
 .site-header {
@@ -7151,10 +7162,9 @@ input, select, textarea, .field, .input {
     isolation: isolate;
 }
 
-    .site-header,
-    .site-header * {
-        pointer-events: auto;
-    }
+.site-header {
+    pointer-events: auto;
+}
 
 .hero-x {
     position: relative;

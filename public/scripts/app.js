@@ -1,9 +1,9 @@
 (() => {
     const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    const token = () => localStorage.getItem('token'), role = () => localStorage.getItem('role');
+    const role = () => localStorage.getItem('role');
     const page = document.body.dataset.page;
-    if (localStorage.getItem('token')) document.getElementById('reg-btn')?.remove(); // залогинен — «Регистрация» не нужна, убираем сразу, без мерцания
+    if (role()) document.getElementById('reg-btn')?.remove(); // залогинен — «Регистрация» не нужна, убираем сразу, без мерцания
     const cabinet = () => role() === 'admin' ? '/pages/admin.html' : '/pages/dashboard.html';
     const when = s => new Date(s).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
     const ago = s => { const d = (Date.now() - new Date(s)) / 1000; return d < 60 ? 'только что' : d < 3600 ? Math.floor(d / 60) + ' мин назад' : d < 86400 ? Math.floor(d / 3600) + ' ч назад' : when(s); };
@@ -33,16 +33,16 @@
     async function api(url, o = {}) {
         const r = await fetch(url, {
             method: o.method || 'GET',
-            headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: 'Bearer ' + token() } : {}) },
+            credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
             body: o.body ? JSON.stringify(o.body) : undefined
         });
         const d = await r.json().catch(() => ({}));
-        if (r.status === 401 && token()) { localStorage.removeItem('token'); localStorage.removeItem('role'); if (d.error && d.error !== 'Требуется вход') sessionStorage.setItem('flash', d.error); if (!['home', 'vacancies', 'partners', 'help', 'vacancy', 'company-profile'].includes(page)) location.href = '/pages/login.html'; }
+        if (r.status === 401 && role()) { localStorage.removeItem('role'); if (d.error && d.error !== 'Требуется вход') sessionStorage.setItem('flash', d.error); if (!['home', 'vacancies', 'partners', 'help', 'vacancy', 'company-profile'].includes(page)) location.href = '/pages/login.html'; }
         if (!r.ok) { const e = new Error(d.error || (r.status === 404 || r.status === 405 ? 'Сервер не знает этого запроса — замените файлы в server/ и перезапустите сервер' : 'Что-то пошло не так')); e.code = d.code; throw e; }
         return d;
     }
   async function downloadPdf(url, name) {
-    const response = await fetch(url, { headers: token() ? { Authorization: 'Bearer ' + token() } : {} });
+    const response = await fetch(url, { credentials: 'same-origin' });
     if (!response.ok) throw new Error('Не удалось открыть документ');
     const blob = await response.blob();
     const link = document.createElement('a');
@@ -291,7 +291,7 @@
 
     async function main() {
         let me = null;
-        if (token()) { try { me = await api('/api/me'); localStorage.setItem('role', me.role); } catch { if (!['home', 'vacancies', 'partners', 'help', 'vacancy', 'company-profile'].includes(page)) return; } }
+        if (role()) { try { me = await api('/api/me'); localStorage.setItem('role', me.role); } catch { if (!['home', 'vacancies', 'partners', 'help', 'vacancy', 'company-profile'].includes(page)) return; } }
         const rule = GUARD[page];
         if (rule) { if (!me) { sessionStorage.setItem('authReturn', location.pathname + location.search + location.hash); return location.href = '/pages/login.html'; } if (!rule.includes(me.role)) return location.href = cabinet(); }
         const allowedReturn = value => {
@@ -343,7 +343,7 @@
                 const dd = um.querySelector('.udrop');
                 um.querySelector('.uavatar').onclick = e => { e.stopPropagation(); dd.classList.toggle('open'); };
                 document.addEventListener('click', e => { if (!um.contains(e.target)) dd.classList.remove('open'); });
-                um.querySelector('#logout').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => { }); localStorage.removeItem('token'); localStorage.removeItem('role'); location.href = '/'; };
+                um.querySelector('#logout').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => { }); localStorage.removeItem('role'); location.href = '/'; };
             }
             const tb = document.createElement('nav'); tb.className = 'tabbar';
             tb.innerHTML = tabs.map(([k, l, h, i]) => `<a href="${h}" class="${k === page ? 'on' : ''}">${icon(i)}<span>${l}</span></a>`).join('');
@@ -432,7 +432,7 @@
                 const btn = af.querySelector('button.btn'); btn.disabled = true;
                 try {
                     const d = await api(af.dataset.url, { method: 'POST', body: Object.fromEntries(new FormData(af)) });
-                    localStorage.setItem('token', d.token); localStorage.setItem('role', d.role);
+                    localStorage.setItem('role', d.role);
                     if (typeof d.codeSent === 'boolean') sessionStorage.setItem('verificationDelivery', d.codeSent ? 'sent' : 'failed');
                     location.href = d.verified ? afterAuth() : '/pages/verify.html';
                 } catch (err) { fail(err); btn.disabled = false; }
@@ -568,7 +568,7 @@
           ${sec('Опыт работы', p.work_history && `<p>${esc(p.work_history)}</p>`)}
           ${sec('Хочу получить опыт', p.desired_experience && `<p>${esc(p.desired_experience)}</p>`)}
           ${sec('Портфолио', p.portfolio && `<p>${linkify(p.portfolio)}</p>`)}
-          <div class="rfoot">Резюме создано на платформе «Первый шаг» · ${new Date().toLocaleDateString('ru')}</div>`;
+          <div class="rfoot">Резюме создано на платформе «Первый опыт» · ${new Date().toLocaleDateString('ru')}</div>`;
                 document.title = `Резюме — ${p.full_name || 'студент'}`;
             } catch (e) { paper.innerHTML = `<p class="empty">${esc(e.message)}</p>`; $('#rprint').disabled = true; }
         }
@@ -709,7 +709,7 @@
             detailRoot.setAttribute('aria-busy', 'true');
             try {
                 const v = await api((me ? '/api/vacancies/' : '/api/public/vacancies/') + entityId);
-                document.title = `${v.title} — Первый шаг`;
+                document.title = `${v.title} — Первый опыт`;
                 const isStudent = me?.role === 'student', active = v.is_active !== false;
                 const action = !me ? '<button class="btn primary" id="vacancy-apply">Откликнуться</button>' : isStudent ? `<button class="btn ${v.applied || !active ? '' : 'primary'}" id="vacancy-apply" ${v.applied || !active ? 'disabled' : ''}>${v.applied ? 'Отклик отправлен' : !active ? 'Вакансия закрыта' : 'Откликнуться'}</button>` : '<p class="muted">Откликнуться можно с аккаунта студента.</p>';
                 detailRoot.innerHTML = `<a class="back-link" href="/pages/vacancies.html">← Все вакансии</a>
@@ -747,7 +747,7 @@
             profileRoot.setAttribute('aria-busy', 'true');
             try {
                 const d = await api('/api/public/companies/' + entityId), c = d.company;
-                document.title = `${c.name} — Первый шаг`;
+                document.title = `${c.name} — Первый опыт`;
                 const website = c.website && safeWebsite(c.website);
                 profileRoot.innerHTML = `<a class="back-link" href="/pages/vacancies.html">← Все вакансии</a><div class="entity-heading"><span class="eyebrow">Компания на платформе</span><h1>${esc(c.name)}</h1><p class="entity-subtitle">${[c.industry, c.city].filter(Boolean).map(esc).join(' · ')}</p></div>
           <div class="company-summary card"><h2>О компании</h2><div class="prose">${esc(c.description || 'Компания пока не добавила описание.')}</div>${website ? `<a class="text-link external-link" href="${esc(website)}" target="_blank" rel="noopener noreferrer">Сайт компании  </a>` : ''}</div>
@@ -759,7 +759,7 @@
             profileRoot.setAttribute('aria-busy', 'true');
             try {
                 const p = await api('/api/students/' + entityId);
-                document.title = `${p.full_name} — Первый шаг`;
+                document.title = `${p.full_name} — Первый опыт`;
                 const profileAvatar = p.avatar ? avatarImage(p.avatar, 'entity-avatar', 'Аватар ' + p.full_name) : '';
                 profileRoot.innerHTML = `<a class="back-link" href="${me.role === 'company' ? '/pages/company.html#students' : '/pages/account.html#profile'}">← ${me.role === 'company' ? 'К студентам' : 'В личный кабинет'}</a><div class="entity-heading">${profileAvatar}<span class="eyebrow">Профиль студента</span><h1>${esc(p.full_name)}</h1><p class="entity-subtitle">${[p.city, p.age && p.age + ' лет', p.university].filter(Boolean).map(esc).join(' · ')}</p><div class="qa">${p.can_resume ? `<a class="btn" href="/pages/resume.html#${p.user_id}">Открыть резюме</a>` : ''}${me.role === 'company' ? '<a class="btn primary" href="/pages/company.html#students">Открыть подбор студентов</a>' : ''}</div></div>
           <div class="profile-sections"><section class="card"><h2>О себе</h2><div class="prose">${esc(p.about || 'Студент пока не добавил рассказ о себе.')}</div>${facts([['Образование', p.education], ['Учебное заведение', p.university], ['Специальность', p.specialty]])}</section>

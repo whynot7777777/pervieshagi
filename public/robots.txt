@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 Disallow: /api/
 
-Sitemap: https://project.wn-7.ru/sitemap.xml
+Sitemap: https://{{SITE_URL_HOST}}/sitemap.xml
