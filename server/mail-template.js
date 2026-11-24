@@ -1,6 +1,6 @@
 // Письмо с кодом в стиле сайта: глубокий чёрный, слоновая кость, halftone.
 // Картинки лежат в public/img и подтягиваются по SITE_URL (письмо остаётся читаемым и без них).
-const SITE = (process.env.SITE_URL || 'https://project.wn-7.ru').replace(/\/+$/, '');
+const SITE = (process.env.SITE_URL || 'http://localhost:3003').replace(/\/+$/, '');
 
 const COPY = {
     verify: {
@@ -34,7 +34,7 @@ exports.codeEmail = ({ code, purpose = 'verify', minutes = 10 }) => {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="supported-color-schemes" content="dark">
-<title>${c.title} — Первый шаг</title>
+<title>${c.title} — Первый опыт</title>
 <style>
 :root{color-scheme:dark;supported-color-schemes:dark}
 body{margin:0;padding:0;background:#050506}
@@ -56,7 +56,7 @@ a{color:#f1f1ef}
 
     <!-- halftone-шапка -->
     <tr><td style="padding:0;line-height:0;font-size:0;background:#050506;">
-      <img src="${SITE}/img/mail-halftone.png" width="600" alt="Первый шаг" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;background:#050506;color:#f1f1ef;font:700 28px ${FONT};line-height:1.4;">
+      <img src="${SITE}/img/mail-halftone.png" width="600" alt="Первый опыт" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;background:#050506;color:#f1f1ef;font:700 28px ${FONT};line-height:1.4;">
     </td></tr>
 
     <tr><td class="pad" style="padding:36px 44px 8px;font-family:${FONT};">
@@ -94,7 +94,7 @@ a{color:#f1f1ef}
       <img src="${SITE}/img/mail-halftone-foot.png" width="600" alt="" style="display:block;width:100%;max-width:600px;height:auto;border:0;background:#050506;">
     </td></tr>
     <tr><td align="center" style="padding:18px 24px 26px;background:#050506;font:400 12px/1.6 ${FONT};color:#6f6f78;">
-      <a href="${SITE}" style="color:#a8a8b0;text-decoration:none;font-weight:600;">Первый шаг</a> &nbsp;·&nbsp; платформа стажировок для студентов<br>
+      <a href="${SITE}" style="color:#a8a8b0;text-decoration:none;font-weight:600;">Первый опыт</a> &nbsp;·&nbsp; платформа стажировок для студентов<br>
       Это автоматическое письмо, отвечать на него не нужно.
     </td></tr>
 

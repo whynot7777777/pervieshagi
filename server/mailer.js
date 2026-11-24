@@ -1,6 +1,6 @@
 const { Resend } = require('resend'); // Подключаем библиотеку
 
-const { RESEND_API_KEY } = process.env;
+const { RESEND_API_KEY, MAIL_FROM } = process.env;
 
 // Проверяем, есть ли ключ
 const mailConfigured = Boolean(RESEND_API_KEY);
@@ -18,15 +18,15 @@ exports.sendMail = async (to, subject, text, customHtml) => {
         // Используем правильный метод emails.send
         const { data, error } = await resend.emails.send({
             // Пока не верифицировал домен в Resend, используй onboarding@resend.dev
-            from: 'Первый шаг <proof@project.wn-7.ru>',
+            from: MAIL_FROM || 'Первый опыт <onboarding@resend.dev>',
             to: [to],
             subject: subject,
             text: text,
             html: customHtml || `
                 <div style="font-family:Arial,sans-serif;line-height:1.6;max-width:600px;margin:0 auto;padding:20px;">
-                    <h2 style="color:#333;">Первый шаг</h2>
+                    <h2 style="color:#333;">Первый опыт</h2>
                     <div style="font-size: 16px; margin: 20px 0;">
-                        ${text.replace(/\n/g, '<br>')}
+                        ${String(text).replace(/[&<>\"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' }[c])).replace(/\n/g, '<br>')}
                     </div>
                     <p style="color:#888;font-size:12px;margin-top:30px;">
                         Если вы не запрашивали это письмо, просто проигнорируйте его.

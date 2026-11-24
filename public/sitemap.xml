@@ -1,34 +1,34 @@
 <urlset>
   <url>
-    <loc>https://project.wn-7.ru/</loc>
+    <loc>https://{{SITE_URL_HOST}}/</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/register.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/register.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/login.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/login.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/profile.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/profile.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/vacancies.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/vacancies.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/companies.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/companies.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/about.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/about.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
   <url>
-    <loc>https://project.wn-7.ru/pages/faq.html</loc>
+    <loc>https://{{SITE_URL_HOST}}/pages/faq.html</loc>
     <lastmod>2026-11-15</lastmod>
   </url>
 </urlset>

@@ -14,21 +14,38 @@ const PUBLIC = path.join(__dirname, '..', 'public');
 const layout = Object.fromEntries(['header', 'footer', 'styles', 'scripts'].map(part => [
     part, fs.readFileSync(path.join(__dirname, 'layout', part + '.html'), 'utf8').trimEnd()
 ]));
-app.use(express.json({ limit: '7mb' }));
+app.disable('x-powered-by');
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 0));
+app.use(express.json({ limit: '15mb', strict: true }));
+app.use((req, res, next) => {
+    const origin = req.get('origin');
+    const allowedOrigin = (process.env.SITE_URL || '').replace(/\/+$/, '');
+    if (origin && allowedOrigin && origin !== allowedOrigin) return res.status(403).json({ error: 'Недопустимый источник запроса' });
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+        const refererOrigin = (() => { try { return new URL(req.get('referer')).origin; } catch { return ''; } })();
+        if (!allowedOrigin || (origin || refererOrigin) !== allowedOrigin)
+            return res.status(403).json({ error: 'Проверка CSRF не пройдена' });
+    }
+    next();
+});
 
 const h = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ================= SEO, заголовки, кэш =================
-const SITE = (process.env.SITE_URL || 'https://project.wn-7.ru').replace(/\/+$/, '');
+const SITE = (process.env.SITE_URL || (process.env.NODE_ENV === 'production' ? 'https://CHANGE-ME.example' : 'http://localhost:3003')).replace(/\/+$/, '');
 const PUBLIC_PAGES = new Set(['index.html', 'about.html', 'directions.html', 'faq.html', 'partners.html', 'vacancies.html', 'help.html', 'vacancy.html', 'company-profile.html']); // всё остальное закрыто от индексации
-app.disable('x-powered-by');
 let compression = null;
 try { compression = require('compression'); } catch { console.warn('Пакет compression не установлен — выполните npm install'); }
 if (compression) app.use(compression());
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
     next();
 });
 app.use('/api', (req, res, next) => { res.setHeader('X-Robots-Tag', 'noindex'); next(); });
@@ -60,7 +77,8 @@ const render = async name => {
         .replace('{{FILTER_DIRECTIONS}}', () => directionOptions(true))
         .replace('{{DIRECTION_LINKS}}', directionLinks)
         .replace('{{VACANCY_DIRECTIONS}}', () => directionOptions(false))
-        .replace(/\{\{SITE_URL\}\}/g, () => SITE);
+        .replace(/\{\{SITE_URL\}\}/g, () => SITE)
+        .replace(/\{\{SITE_URL_HOST\}\}/g, () => SITE.replace(/^https?:\/\//, ''));
     if (name === 'index.html') {
         let st = null; try { st = await stats(); } catch { }
         if (st) for (const [k, v] of Object.entries(st)) html = html.replace(new RegExp(`(id="n-${k}" data-count=")0(">)0(<)`), `$1${v}$2${v}$3`);
@@ -77,6 +95,10 @@ app.get('/sitemap.xml', (req, res) => {
 app.get(['/', '/pages/:name'], h(async (req, res, next) => {
     const name = req.params.name ? path.basename(req.params.name) : 'index.html';
     if (!name.endsWith('.html') || !fs.existsSync(path.join(PUBLIC, 'pages', name))) return next();
+    if (name === 'admin.html') {
+        const allowed = (process.env.ADMIN_ALLOWED_IPS || '').split(',').map(x => x.trim()).filter(Boolean);
+        if (!allowed.includes(req.ip)) return res.status(404).type('text').send('Not found');
+    }
     if (!PUBLIC_PAGES.has(name)) res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Cache-Control', 'no-cache');
     res.type('html').send(await render(name));
@@ -91,9 +113,9 @@ const num = v => Number(v) || 0;
 const clean = (v, max = 500) => { const t = String(v ?? '').trim().slice(0, max); return t === '' ? null : t; };
 const notify = (uid, text, link) => query('INSERT INTO notifications (user_id, text, link) VALUES ($1,$2,$3)', [uid, text, link || null]);
 const nameOf = async uid => (await one('SELECT full_name FROM profiles WHERE user_id = $1', [uid]))?.full_name || 'Студент';
-const makeSession = async uid => {
+const makeSession = async (uid, admin2fa = false) => {
     const token = crypto.randomBytes(32).toString('hex');
-    await query('INSERT INTO sessions (token, user_id) VALUES ($1,$2)', [token, uid]);
+    await query('INSERT INTO sessions (token, user_id, admin_2fa_verified) VALUES ($1,$2,$3)', [token, uid, admin2fa]);
     return token;
 };
 
@@ -114,7 +136,7 @@ async function issueCode(uid, purpose, email) {
     const { id } = await one(`INSERT INTO email_codes (user_id, purpose, code_hash, expires_at)
         VALUES ($1,$2,$3, now() + interval '10 minutes') RETURNING id`, [uid, purpose, hashCode(uid, code)]);
     const mail = codeEmail({ code, purpose: purpose === 'verify' ? 'verify' : 'reset', minutes: 10 });
-    const sent = await sendMail(email, purpose === 'verify' ? 'Код подтверждения — Первый шаг' : 'Сброс пароля — Первый шаг', mail.text, mail.html);
+    const sent = await sendMail(email, purpose === 'verify' ? 'Код подтверждения — Первый опыт' : 'Сброс пароля — Первый опыт', mail.text, mail.html);
     if (sent) await query('DELETE FROM email_codes WHERE user_id = $1 AND purpose = $2 AND id < $3', [uid, purpose, id]);
     else await query('DELETE FROM email_codes WHERE id = $1', [id]);
     return sent;
@@ -132,18 +154,52 @@ async function checkCode(uid, purpose, code) {
 }
 
 // ----- авторизация -----
+function verifyTotp(secret, code) {
+    if (!secret || !/^\\d{6}$/.test(String(code || ''))) return false;
+    const key = Buffer.from(secret.replace(/\\s+/g, '').toUpperCase(), 'base32');
+    const counter = Math.floor(Date.now() / 30000);
+    for (let drift = -1; drift <= 1; drift++) {
+        const buf = Buffer.alloc(8); buf.writeBigUInt64BE(BigInt(counter + drift));
+        const digest = crypto.createHmac('sha1', key).update(buf).digest();
+        const offset = digest[digest.length - 1] & 15;
+        const binary = ((digest[offset] & 127) << 24) | ((digest[offset + 1] & 255) << 16) |
+            ((digest[offset + 2] & 255) << 8) | (digest[offset + 3] & 255);
+        if (String(binary % 1000000).padStart(6, '0') === String(code)) return true;
+    }
+    return false;
+}
+const COOKIE_NAME = 'pe_session';
+const cookieValue = (req, name) => {
+    const raw = req.headers.cookie || '';
+    const part = raw.split(';').map(x => x.trim()).find(x => x.startsWith(name + '='));
+    return part ? decodeURIComponent(part.slice(name.length + 1)) : '';
+};
+const setSessionCookie = (res, token) => res.cookie(COOKIE_NAME, token, {
+    httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict',
+    path: '/', maxAge: 7 * 24 * 60 * 60 * 1000
+});
+const clearSessionCookie = res => res.clearCookie(COOKIE_NAME, {
+    httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'strict', path: '/'
+});
 const auth = h(async (req, res, next) => {
-    const token = (req.headers.authorization || '').replace('Bearer ', '');
-    const s = await one('SELECT s.user_id, u.role, u.email_verified, u.is_blocked, c.approved FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN companies c ON c.user_id = u.id WHERE s.token = $1', [token]);
+    const token = cookieValue(req, COOKIE_NAME) || (process.env.NODE_ENV !== 'production' ? (req.headers.authorization || '').replace('Bearer ', '') : '');
+    const s = await one('SELECT s.user_id, s.admin_2fa_verified, u.role, u.email_verified, u.is_blocked, c.approved FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN companies c ON c.user_id = u.id WHERE s.token = $1', [token]);
     if (!s) return res.status(401).json({ error: 'Требуется вход' });
     if (s.is_blocked) return res.status(401).json({ error: 'Аккаунт заблокирован администратором' });
-    Object.assign(req, { uid: s.user_id, role: s.role, token, verified: s.email_verified || s.role === 'admin', approved: s.role !== 'company' || !!s.approved });
+    Object.assign(req, { uid: s.user_id, role: s.role, admin2fa: s.admin_2fa_verified, token, verified: s.email_verified || s.role === 'admin', approved: s.role !== 'company' || !!s.approved });
     next();
 });
 const need = role => (req, res, next) => req.role === role ? next() : res.status(403).json({ error: 'Недоступно для вашего типа аккаунта' });
 const verified = (req, res, next) => req.verified ? next() : res.status(403).json({ error: 'Подтвердите email, чтобы продолжить', code: 'unverified' });
 const approved = (req, res, next) => req.approved ? next() : res.status(403).json({ error: 'Аккаунт компании проверяется администратором. Оставьте заявку в чате поддержки', code: 'unapproved' });
-const student = [auth, need('student')], company = [auth, need('company')], admin = [auth, need('admin')];
+const student = [auth, need('student')], company = [auth, need('company')];
+const adminNetwork = (req, res, next) => {
+    const allowed = (process.env.ADMIN_ALLOWED_IPS || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (!allowed.length || !allowed.includes(req.ip)) return res.status(404).json({ error: 'Not found' });
+    if (!req.admin2fa) return res.status(403).json({ error: 'Требуется двухфакторная аутентификация' });
+    next();
+};
+const admin = [auth, need('admin'), adminNetwork];
 const profileMedia = [auth, (req, res, next) => {
     if (req.role === 'student' || req.role === 'company') return next();
     res.status(403).json({ error: 'Недоступно для вашего типа аккаунта' });
@@ -231,21 +287,23 @@ app.post('/api/register', h(async (req, res) => {
         }
         const codeSent = await issueCode(u.id, 'verify', email.toLowerCase());
         if (codeSent) limit('vs:' + u.id, 1, 60000);
-        res.json({ token: await makeSession(u.id), role, verified: false, codeSent });
+        setSessionCookie(res, await makeSession(u.id)); res.json({ role, verified: false, codeSent });
     } catch (e) {
         if (e.code === '23505') return res.status(409).json({ error: 'Такой email уже зарегистрирован' });
         throw e;
     }
 }));
 app.post('/api/login', h(async (req, res) => {
-    const { email, password } = req.body || {};
-    if (!limit(`login:${req.ip}:${email}`, 10, 900000)) return tooMany(res);
+    const { email, password, totp } = req.body || {};
+    if (!limit(`login:${req.ip}:${email}`, 5, 900000)) return tooMany(res);
     const u = await one('SELECT * FROM users WHERE email = $1', [(email || '').toLowerCase()]);
     if (!u || !bcrypt.compareSync(password || '', u.password_hash)) return res.status(401).json({ error: 'Неверный email или пароль' });
     if (u.is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован администратором' });
-    res.json({ token: await makeSession(u.id), role: u.role, verified: u.email_verified || u.role === 'admin' });
+    if (u.role === 'admin' && !verifyTotp(process.env.ADMIN_TOTP_SECRET, totp))
+        return res.status(401).json({ error: 'Для входа администратора нужен корректный код 2FA' });
+    setSessionCookie(res, await makeSession(u.id, u.role === 'admin')); res.json({ role: u.role, verified: u.email_verified || u.role === 'admin' });
 }));
-app.post('/api/logout', auth, h(async (req, res) => { await query('DELETE FROM sessions WHERE token = $1', [req.token]); res.json({ ok: true }); }));
+app.post('/api/logout', auth, h(async (req, res) => { await query('DELETE FROM sessions WHERE token = $1', [req.token]); clearSessionCookie(res); res.json({ ok: true }); }));
 async function avatarUrl(userId) {
     const avatar = await one('SELECT updated_at FROM student_avatars WHERE user_id = $1', [userId]);
     return avatar ? `/api/profile/avatar/${userId}?v=${avatar.updated_at.getTime()}` : null;
@@ -314,12 +372,12 @@ const dataFile = (value, mime, maxBytes) => {
     return content.length && content.length <= maxBytes ? { mime: match[1].toLowerCase(), content } : null;
 };
 function pdfFile(body) {
-    const file = dataFile(body?.data, 'application/pdf', 5 * 1024 * 1024);
+    const file = dataFile(body?.data, 'application/pdf', 10 * 1024 * 1024);
     if (!file || file.content.subarray(0, 5).toString() !== '%PDF-') return null;
     const name = String(body?.name || 'document.pdf').replace(/[^a-z0-9а-яё_. -]/gi, '_').trim().slice(0, 115);
     return { ...file, name: /\.pdf$/i.test(name) ? name : (name || 'document') + '.pdf' };
 }
-const pdfError = res => res.status(400).json({ error: 'Загрузите корректный PDF-файл до 5 МБ' });
+const pdfError = res => res.status(400).json({ error: 'Загрузите корректный PDF-файл до 10 МБ' });
 const sendPdf = (res, document) => res.type('application/pdf').set('Cache-Control', 'private, no-store')
     .attachment(document.name).send(document.content);
 const profileDocuments = uid => query('SELECT id, name, octet_length(content)::int AS bytes FROM student_documents WHERE user_id = $1 ORDER BY id DESC', [uid]);
@@ -337,9 +395,18 @@ app.put('/api/profile', ...student, h(async (req, res) => {
     ON CONFLICT (user_id) DO UPDATE SET ${SF.map(f => `${f} = EXCLUDED.${f}`).join(',')}`, [req.uid, ...p]);
     res.json({ ok: true });
 }));
+function validImageSignature(file) {
+    const b = file.content;
+    if (file.mime === 'image/png') return b.subarray(0, 8).toString('hex') === '89504e470d0a1a0a';
+    if (file.mime === 'image/jpeg' || file.mime === 'image/jpg') return b.subarray(0, 3).toString('hex') === 'ffd8ff';
+    if (file.mime === 'image/webp') return b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP';
+    if (file.mime === 'image/gif') return ['GIF87a', 'GIF89a'].includes(b.toString('ascii', 0, 6));
+    return false;
+}
 app.post('/api/profile/avatar', ...profileMedia, h(async (req, res) => {
     const file = dataFile(req.body?.data, req.body?.mime, 600 * 1024);
-    if (!file || !/^image\/(png|jpe?g|webp|gif)$/.test(file.mime)) return res.status(400).json({ error: 'Загрузите изображение PNG, JPG, WEBP или GIF до 600 КБ' });
+    if (!file || !/^image\/(png|jpe?g|webp|gif)$/.test(file.mime) || !validImageSignature(file))
+        return res.status(400).json({ error: 'Загрузите корректное изображение PNG, JPG, WEBP или GIF до 600 КБ' });
     await query(`INSERT INTO student_avatars (user_id, mime, content) VALUES ($1,$2,$3)
     ON CONFLICT (user_id) DO UPDATE SET mime = EXCLUDED.mime, content = EXCLUDED.content, updated_at = clock_timestamp()`, [req.uid, file.mime, file.content]);
     res.json({ ok: true, avatar: await avatarUrl(req.uid) });
@@ -515,7 +582,7 @@ app.post('/api/company/vacancies', ...company, approved, verified, h(async (req,
     res.json({ ok: true });
 }));
 function workplacePhoto(data) {
-    const file = dataFile(data, null, 5 * 1024 * 1024);
+    const file = dataFile(data, null, 10 * 1024 * 1024);
     if (!file) return null;
     const bytes = file.content;
     if (file.mime === 'image/png' && bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') return file;
@@ -523,7 +590,7 @@ function workplacePhoto(data) {
     if (file.mime === 'image/webp' && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return file;
     return null;
 }
-const invalidWorkplacePhoto = res => res.status(400).json({ error: 'Загрузите PNG, JPG или WEBP до 5 МБ' });
+const invalidWorkplacePhoto = res => res.status(400).json({ error: 'Загрузите PNG, JPG или WEBP до 10 МБ' });
 app.post('/api/company/vacancies/:id/workplace-photo', ...company, approved, verified, h(async (req, res) => {
   const file = workplacePhoto(req.body?.data);
   if (!file) return invalidWorkplacePhoto(res);
@@ -874,7 +941,11 @@ app.use(h(async (req, res) => { // страница не найдена
     res.status(404); res.setHeader('X-Robots-Tag', 'noindex');
     res.type('html').send(await render('404.html'));
 }));
-app.use((err, req, res, next) => { console.error(err); res.status(err.status || 500).json({ error: err.status === 503 ? err.message : 'Ошибка сервера' }); });
+app.use((err, req, res, next) => {
+    if (process.env.NODE_ENV !== 'production') console.error(err);
+    res.status(err.status || (err.type === 'entity.too.large' ? 413 : 500))
+        .json({ error: err.status === 503 ? err.message : (err.type === 'entity.too.large' ? 'Файл или запрос превышает допустимый размер' : 'Ошибка сервера') });
+});
 
 async function ensureAdmin() {
     const e = (process.env.ADMIN_EMAIL || '').toLowerCase(), p = process.env.ADMIN_PASSWORD;
@@ -882,12 +953,15 @@ async function ensureAdmin() {
     const u = await one('SELECT id FROM users WHERE email = $1', [e]);
     if (!u) await query(`INSERT INTO users (email, password_hash, role, email_verified) VALUES ($1,$2,'admin',true)`, [e, bcrypt.hashSync(p, 10)]);
     else await query(`UPDATE users SET role = 'admin', email_verified = true WHERE id = $1`, [u.id]);
-    console.log('Администратор:', e);
+
 }
 
 const PORT = process.env.PORT || 3000;
 module.exports = app;
-if (require.main === module) init().then(ensureAdmin).then(() => {
+if (require.main === module) {
+    if (process.env.NODE_ENV === 'production' && (!process.env.SITE_URL || process.env.SITE_URL.includes('CHANGE-ME')))
+        throw new Error('В production необходимо задать SITE_URL с новым доменом');
+    init().then(ensureAdmin).then(() => {
     const server = app.listen(PORT);
     server.on('listening', () => console.log(`Сервер запущен: http://localhost:${PORT} (PostgreSQL: ${process.env.PGDATABASE})`));
     server.on('error', e => {
@@ -899,4 +973,5 @@ if (require.main === module) init().then(ensureAdmin).then(() => {
     console.error('Не удалось запустить сервер:', e.code || '', e.message);
     console.error('Проверьте PGPASSWORD, PGPORT и PGDATABASE в server/.env и что служба PostgreSQL запущена.');
     process.exit(1);
-});
+    });
+}
