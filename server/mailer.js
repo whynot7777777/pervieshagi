@@ -10,7 +10,7 @@ exports.mailConfigured = mailConfigured;
 
 exports.sendMail = async (to, subject, text, customHtml) => {
     if (!resend) {
-        console.log('⚠️ RESEND_API_KEY не настроен. Письмо не отправлено.');
+        if (process.env.NODE_ENV !== 'production') console.warn('RESEND_API_KEY не настроен. Письмо не отправлено.');
         return false;
     }
 
@@ -40,7 +40,7 @@ exports.sendMail = async (to, subject, text, customHtml) => {
             return false;
         }
 
-        console.log(`✅ Письмо успешно отправлено на ${to} (ID: ${data.id})`);
+        if (process.env.NODE_ENV !== 'production') console.log('Письмо успешно отправлено.');
         return true;
     } catch (err) {
         console.error('❌ Критическая ошибка при отправке:', err);

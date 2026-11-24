@@ -1,4 +1,5 @@
 const express = require('express');
+const sharp = require('sharp');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const path = require('path');
@@ -17,15 +18,35 @@ const layout = Object.fromEntries(['header', 'footer', 'styles', 'scripts'].map(
 app.disable('x-powered-by');
 app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 0));
 app.use(express.json({ limit: '15mb', strict: true }));
+const allowedOrigins = new Set(
+    [process.env.SITE_URL, process.env.ADMIN_SITE_URL]
+        .filter(Boolean)
+        .map(value => {
+            try { return new URL(value).origin; }
+            catch { return null; }
+        })
+        .filter(Boolean)
+);
+
 app.use((req, res, next) => {
-    const origin = req.get('origin');
-    const allowedOrigin = (process.env.SITE_URL || '').replace(/\/+$/, '');
-    if (origin && allowedOrigin && origin !== allowedOrigin) return res.status(403).json({ error: 'Недопустимый источник запроса' });
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-        const refererOrigin = (() => { try { return new URL(req.get('referer')).origin; } catch { return ''; } })();
-        if (!allowedOrigin || (origin || refererOrigin) !== allowedOrigin)
-            return res.status(403).json({ error: 'Проверка CSRF не пройдена' });
+    const origin = req.get('origin') || '';
+    const refererOrigin = (() => {
+        try { return new URL(req.get('referer')).origin; }
+        catch { return ''; }
+    })();
+
+    if (origin && !allowedOrigins.has(origin)) {
+        return res.status(403).json({ error: 'Недопустимый источник запроса' });
     }
+
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+        const requestOrigin = origin || refererOrigin;
+
+        if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
+            return res.status(403).json({ error: 'Проверка CSRF не пройдена' });
+        }
+    }
+
     next();
 });
 
@@ -115,16 +136,38 @@ const notify = (uid, text, link) => query('INSERT INTO notifications (user_id, t
 const nameOf = async uid => (await one('SELECT full_name FROM profiles WHERE user_id = $1', [uid]))?.full_name || 'Студент';
 const makeSession = async (uid, admin2fa = false) => {
     const token = crypto.randomBytes(32).toString('hex');
-    await query('INSERT INTO sessions (token, user_id, admin_2fa_verified) VALUES ($1,$2,$3)', [token, uid, admin2fa]);
+    await query("INSERT INTO sessions (token, user_id, admin_2fa_verified, expires_at) VALUES ($1,$2,$3,now() + interval '7 days')", [token, uid, admin2fa]);
     return token;
 };
 
-// ----- простое ограничение частоты запросов (в памяти) -----
-const hits = new Map();
-const limit = (key, max, ms) => {
-    const now = Date.now(), r = (hits.get(key) || []).filter(t => now - t < ms);
-    if (r.length >= max) return false;
-    r.push(now); hits.set(key, r); return true;
+// ----- постоянное ограничение частоты запросов (PostgreSQL) -----
+let rateLimitOps = 0;
+const limit = async (key, max, ms) => {
+    const keyHash = crypto.createHash('sha256').update(String(key)).digest('hex');
+    const result = await one(`
+        INSERT INTO rate_limits (key_hash, window_started_at, hits, expires_at)
+        VALUES ($1, now(), 1, now() + ($2::bigint * interval '1 millisecond'))
+        ON CONFLICT (key_hash) DO UPDATE SET
+            hits = CASE
+                WHEN rate_limits.window_started_at <= now() - ($2::bigint * interval '1 millisecond') THEN 1
+                ELSE rate_limits.hits + 1
+            END,
+            window_started_at = CASE
+                WHEN rate_limits.window_started_at <= now() - ($2::bigint * interval '1 millisecond') THEN now()
+                ELSE rate_limits.window_started_at
+            END,
+            expires_at = CASE
+                WHEN rate_limits.window_started_at <= now() - ($2::bigint * interval '1 millisecond')
+                    THEN now() + ($2::bigint * interval '1 millisecond')
+                ELSE rate_limits.expires_at
+            END
+        RETURNING hits
+    `, [keyHash, ms]);
+
+    if (++rateLimitOps % 500 === 0) {
+        await query('DELETE FROM rate_limits WHERE expires_at < now()');
+    }
+    return result.hits <= max;
 };
 const tooMany = res => res.status(429).json({ error: 'Слишком много попыток. Подождите немного' });
 
@@ -154,18 +197,59 @@ async function checkCode(uid, purpose, code) {
 }
 
 // ----- авторизация -----
+function decodeBase32(secret) {
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const normalized = String(secret || '')
+        .replace(/\s+/g, '')
+        .replace(/=+$/, '')
+        .toUpperCase();
+
+    if (!normalized || /[^A-Z2-7]/.test(normalized)) return null;
+
+    let bits = 0;
+    let buffer = 0;
+    const bytes = [];
+
+    for (const char of normalized) {
+        buffer = (buffer << 5) | alphabet.indexOf(char);
+        bits += 5;
+
+        if (bits >= 8) {
+            bits -= 8;
+            bytes.push((buffer >> bits) & 255);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+
+    return Buffer.from(bytes);
+}
+
 function verifyTotp(secret, code) {
-    if (!secret || !/^\\d{6}$/.test(String(code || ''))) return false;
-    const key = Buffer.from(secret.replace(/\\s+/g, '').toUpperCase(), 'base32');
+    if (!secret || !/^\d{6}$/.test(String(code || ''))) return false;
+
+    const key = decodeBase32(secret);
+    if (!key || key.length === 0) return false;
+
     const counter = Math.floor(Date.now() / 30000);
+
     for (let drift = -1; drift <= 1; drift++) {
-        const buf = Buffer.alloc(8); buf.writeBigUInt64BE(BigInt(counter + drift));
+        const buf = Buffer.alloc(8);
+        buf.writeBigUInt64BE(BigInt(counter + drift));
+
         const digest = crypto.createHmac('sha1', key).update(buf).digest();
         const offset = digest[digest.length - 1] & 15;
-        const binary = ((digest[offset] & 127) << 24) | ((digest[offset + 1] & 255) << 16) |
-            ((digest[offset + 2] & 255) << 8) | (digest[offset + 3] & 255);
-        if (String(binary % 1000000).padStart(6, '0') === String(code)) return true;
+
+        const binary =
+            ((digest[offset] & 127) << 24) |
+            ((digest[offset + 1] & 255) << 16) |
+            ((digest[offset + 2] & 255) << 8) |
+            (digest[offset + 3] & 255);
+
+        if (String(binary % 1000000).padStart(6, '0') === String(code)) {
+            return true;
+        }
     }
+
     return false;
 }
 const COOKIE_NAME = 'pe_session';
@@ -183,10 +267,14 @@ const clearSessionCookie = res => res.clearCookie(COOKIE_NAME, {
 });
 const auth = h(async (req, res, next) => {
     const token = cookieValue(req, COOKIE_NAME) || (process.env.NODE_ENV !== 'production' ? (req.headers.authorization || '').replace('Bearer ', '') : '');
-    const s = await one('SELECT s.user_id, s.admin_2fa_verified, u.role, u.email_verified, u.is_blocked, c.approved FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN companies c ON c.user_id = u.id WHERE s.token = $1', [token]);
+    const s = await one('SELECT s.user_id, s.admin_2fa_verified, u.role, u.email_verified, u.is_blocked, c.approved FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN companies c ON c.user_id = u.id WHERE s.token = $1 AND s.expires_at > now()', [token]);
     if (!s) return res.status(401).json({ error: 'Требуется вход' });
     if (s.is_blocked) return res.status(401).json({ error: 'Аккаунт заблокирован администратором' });
     Object.assign(req, { uid: s.user_id, role: s.role, admin2fa: s.admin_2fa_verified, token, verified: s.email_verified || s.role === 'admin', approved: s.role !== 'company' || !!s.approved });
+    await query(
+        'INSERT INTO user_activity_daily (user_id, activity_date) VALUES ($1, CURRENT_DATE) ON CONFLICT DO NOTHING',
+        [s.user_id]
+    );
     next();
 });
 const need = role => (req, res, next) => req.role === role ? next() : res.status(403).json({ error: 'Недоступно для вашего типа аккаунта' });
@@ -278,7 +366,7 @@ app.post('/api/register', h(async (req, res) => {
         return res.status(400).json({ error: 'Проверьте email и пароль (от 8 символов)' });
     if (role === 'company' && (name || '').trim().length < 2) return res.status(400).json({ error: 'Укажите название компании' });
     if (!mailConfigured) return mailUnavailable(res);
-    if (!limit('reg:' + req.ip, 10, 3600000)) return tooMany(res);
+    if (!await limit('reg:' + req.ip, 10, 3600000)) return tooMany(res);
     try {
         const u = await one('INSERT INTO users (email, password_hash, role) VALUES ($1,$2,$3) RETURNING id', [email.toLowerCase(), bcrypt.hashSync(password, 10), role]);
         if (role === 'company') {
@@ -286,7 +374,7 @@ app.post('/api/register', h(async (req, res) => {
             for (const a of await query(`SELECT id FROM users WHERE role = 'admin'`)) await notify(a.id, `Компания «${name.trim()}» ожидает одобрения`, '/pages/admin.html#users');
         }
         const codeSent = await issueCode(u.id, 'verify', email.toLowerCase());
-        if (codeSent) limit('vs:' + u.id, 1, 60000);
+        if (codeSent) await limit('vs:' + u.id, 1, 60000);
         setSessionCookie(res, await makeSession(u.id)); res.json({ role, verified: false, codeSent });
     } catch (e) {
         if (e.code === '23505') return res.status(409).json({ error: 'Такой email уже зарегистрирован' });
@@ -295,12 +383,14 @@ app.post('/api/register', h(async (req, res) => {
 }));
 app.post('/api/login', h(async (req, res) => {
     const { email, password, totp } = req.body || {};
-    if (!limit(`login:${req.ip}:${email}`, 5, 900000)) return tooMany(res);
+    if (!await limit(`login:${req.ip}:${email}`, 5, 900000)) return tooMany(res);
     const u = await one('SELECT * FROM users WHERE email = $1', [(email || '').toLowerCase()]);
     if (!u || !bcrypt.compareSync(password || '', u.password_hash)) return res.status(401).json({ error: 'Неверный email или пароль' });
     if (u.is_blocked) return res.status(403).json({ error: 'Аккаунт заблокирован администратором' });
+    if (u.role === 'admin' && !totp)
+        return res.status(401).json({ error: 'Требуется код 2FA администратора', code: '2fa_required' });
     if (u.role === 'admin' && !verifyTotp(process.env.ADMIN_TOTP_SECRET, totp))
-        return res.status(401).json({ error: 'Для входа администратора нужен корректный код 2FA' });
+        return res.status(401).json({ error: 'Неверный код 2FA администратора' });
     setSessionCookie(res, await makeSession(u.id, u.role === 'admin')); res.json({ role: u.role, verified: u.email_verified || u.role === 'admin' });
 }));
 app.post('/api/logout', auth, h(async (req, res) => { await query('DELETE FROM sessions WHERE token = $1', [req.token]); clearSessionCookie(res); res.json({ ok: true }); }));
@@ -313,13 +403,13 @@ app.get('/api/me', auth, h(async (req, res) => res.json({ id: req.uid, role: req
 app.post('/api/verify/send', auth, h(async (req, res) => {
     if (req.verified) return res.json({ ok: true, verified: true });
     if (!mailConfigured) return mailUnavailable(res);
-    if (!limit('vs:' + req.uid, 1, 60000)) return res.status(429).json({ error: 'Повторно отправить код можно через минуту' });
+    if (!await limit('vs:' + req.uid, 1, 60000)) return res.status(429).json({ error: 'Повторно отправить код можно через минуту' });
     const sent = await issueCode(req.uid, 'verify', (await one('SELECT email FROM users WHERE id = $1', [req.uid])).email);
     if (!sent) return mailUnavailable(res);
     res.json({ ok: true });
 }));
 app.post('/api/verify/confirm', auth, h(async (req, res) => {
-    if (!limit('vc:' + req.uid, 10, 600000)) return tooMany(res);
+    if (!await limit('vc:' + req.uid, 10, 600000)) return tooMany(res);
     const err = await checkCode(req.uid, 'verify', req.body?.code);
     if (err) return res.status(400).json({ error: err });
     await query('UPDATE users SET email_verified = true WHERE id = $1', [req.uid]);
@@ -329,7 +419,7 @@ app.post('/api/verify/confirm', auth, h(async (req, res) => {
 app.post('/api/password/forgot', h(async (req, res) => {
     const email = String(req.body?.email || '').toLowerCase();
     if (!mailConfigured) return mailUnavailable(res);
-    if (!limit(`fg:${req.ip}:${email}`, 3, 600000)) return tooMany(res);
+    if (!await limit(`fg:${req.ip}:${email}`, 3, 600000)) return tooMany(res);
     const u = await one('SELECT id FROM users WHERE email = $1 AND NOT is_blocked', [email]);
     if (u) await issueCode(u.id, 'reset', email);
     res.json({ ok: true }); // ответ одинаковый для известных и неизвестных адресов
@@ -337,7 +427,7 @@ app.post('/api/password/forgot', h(async (req, res) => {
 app.post('/api/password/reset', h(async (req, res) => {
     const { email, code, password } = req.body || {};
     if ((password || '').length < 8) return res.status(400).json({ error: 'Пароль — от 8 символов' });
-    if (!limit(`rs:${req.ip}`, 10, 600000)) return tooMany(res);
+    if (!await limit(`rs:${req.ip}`, 10, 600000)) return tooMany(res);
     const u = await one('SELECT id FROM users WHERE email = $1', [String(email || '').toLowerCase()]);
     const err = u ? await checkCode(u.id, 'reset', code) : 'Неверный код';
     if (err) return res.status(400).json({ error: err });
@@ -366,10 +456,17 @@ app.post('/api/notifications/read', auth, h(async (req, res) => { await query('U
 const SF = ['full_name', 'age', 'education', 'university', 'specialty', 'work_history', 'desired_experience', 'city', 'skills', 'about', 'portfolio'];
 const dataFile = (value, mime, maxBytes) => {
     const raw = String(value || '');
-    const match = raw.match(/^data:([^;,]+);base64,([a-z0-9+/=]+)$/i);
-    if (!match || (mime && match[1] !== mime)) return null;
-    const content = Buffer.from(match[2], 'base64');
-    return content.length && content.length <= maxBytes ? { mime: match[1].toLowerCase(), content } : null;
+    const match = raw.match(/^data:([^;,]+);base64,([a-z0-9+/]+={0,2})$/i);
+    if (!match || (mime && match[1].toLowerCase() !== mime.toLowerCase())) return null;
+
+    const encoded = match[2];
+    if (encoded.length % 4 !== 0) return null;
+    const content = Buffer.from(encoded, 'base64');
+
+    if (!content.length || content.length > maxBytes) return null;
+    if (content.toString('base64') !== encoded) return null;
+
+    return { mime: match[1].toLowerCase(), content };
 };
 function pdfFile(body) {
     const file = dataFile(body?.data, 'application/pdf', 10 * 1024 * 1024);
@@ -395,17 +492,43 @@ app.put('/api/profile', ...student, h(async (req, res) => {
     ON CONFLICT (user_id) DO UPDATE SET ${SF.map(f => `${f} = EXCLUDED.${f}`).join(',')}`, [req.uid, ...p]);
     res.json({ ok: true });
 }));
-function validImageSignature(file) {
-    const b = file.content;
-    if (file.mime === 'image/png') return b.subarray(0, 8).toString('hex') === '89504e470d0a1a0a';
-    if (file.mime === 'image/jpeg' || file.mime === 'image/jpg') return b.subarray(0, 3).toString('hex') === 'ffd8ff';
-    if (file.mime === 'image/webp') return b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP';
-    if (file.mime === 'image/gif') return ['GIF87a', 'GIF89a'].includes(b.toString('ascii', 0, 6));
-    return false;
+async function validImageFile(file, allowedMimes) {
+    if (!file || !allowedMimes.includes(file.mime)) return false;
+
+    const expectedFormats = {
+        'image/png': 'png',
+        'image/jpeg': 'jpeg',
+        'image/jpg': 'jpeg',
+        'image/webp': 'webp',
+        'image/gif': 'gif'
+    };
+
+    try {
+        const image = sharp(file.content, {
+            limitInputPixels: 40_000_000,
+            failOn: 'error'
+        });
+        const metadata = await image.metadata();
+
+        if (metadata.format !== expectedFormats[file.mime] ||
+            !metadata.width || !metadata.height ||
+            metadata.width * metadata.height > 40_000_000) {
+            return false;
+        }
+
+        await sharp(file.content, {
+            limitInputPixels: 40_000_000,
+            failOn: 'error'
+        }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
+
+        return true;
+    } catch {
+        return false;
+    }
 }
 app.post('/api/profile/avatar', ...profileMedia, h(async (req, res) => {
     const file = dataFile(req.body?.data, req.body?.mime, 600 * 1024);
-    if (!file || !/^image\/(png|jpe?g|webp|gif)$/.test(file.mime) || !validImageSignature(file))
+    if (!await validImageFile(file, ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif']))
         return res.status(400).json({ error: 'Загрузите корректное изображение PNG, JPG, WEBP или GIF до 600 КБ' });
     await query(`INSERT INTO student_avatars (user_id, mime, content) VALUES ($1,$2,$3)
     ON CONFLICT (user_id) DO UPDATE SET mime = EXCLUDED.mime, content = EXCLUDED.content, updated_at = clock_timestamp()`, [req.uid, file.mime, file.content]);
@@ -575,24 +698,20 @@ app.post('/api/company/vacancies', ...company, approved, verified, h(async (req,
     const b = req.body || {};
     if ((b.title || '').trim().length < 3) return res.status(400).json({ error: 'Укажите название вакансии' });
     const c = await one('SELECT name FROM companies WHERE user_id = $1', [req.uid]);
-    const photo = b.photo ? workplacePhoto(b.photo) : null;
+    const photo = b.photo ? await workplacePhoto(b.photo) : null;
     if (b.photo && !photo) return invalidWorkplacePhoto(res);
     await query('INSERT INTO vacancies (company, title, description, company_id, city, format, category, paid, workplace_photo_mime, workplace_photo) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
         [c.name, b.title.trim().slice(0, 120), clean(b.description, 2000) || '', req.uid, clean(b.city, 80), FORMATS.includes(b.format) ? b.format : null, clean(b.category, 40), !!b.paid, photo?.mime ?? null, photo?.content ?? null]);
     res.json({ ok: true });
 }));
-function workplacePhoto(data) {
+async function workplacePhoto(data) {
     const file = dataFile(data, null, 10 * 1024 * 1024);
-    if (!file) return null;
-    const bytes = file.content;
-    if (file.mime === 'image/png' && bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') return file;
-    if (file.mime === 'image/jpeg' && bytes.subarray(0, 3).toString('hex') === 'ffd8ff') return file;
-    if (file.mime === 'image/webp' && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return file;
-    return null;
+    if (!file || !await validImageFile(file, ['image/png', 'image/jpeg', 'image/webp'])) return null;
+    return file;
 }
 const invalidWorkplacePhoto = res => res.status(400).json({ error: 'Загрузите PNG, JPG или WEBP до 10 МБ' });
 app.post('/api/company/vacancies/:id/workplace-photo', ...company, approved, verified, h(async (req, res) => {
-  const file = workplacePhoto(req.body?.data);
+  const file = await workplacePhoto(req.body?.data);
   if (!file) return invalidWorkplacePhoto(res);
   const result = await one('UPDATE vacancies SET workplace_photo_mime = $1, workplace_photo = $2 WHERE id = $3 AND company_id = $4 RETURNING id', [file.mime, file.content, num(req.params.id), req.uid]);
   result ? res.json({ ok: true }) : res.status(404).json({ error: 'Вакансия не найдена' });
@@ -650,7 +769,7 @@ app.post('/api/interviews/:id/respond', ...student, h(async (req, res) => {
     await notify(i.company_id, `${await nameOf(req.uid)} ${st === 'confirmed' ? 'подтвердил(а)' : 'просит перенести'} собеседование по «${i.title}»`, '/pages/company.html#responses');
     res.json({ ok: true });
 }));
-app.get('/api/students', ...company, h(async (req, res) => res.json(await query(`SELECT user_id, full_name, age, education, university, specialty, desired_experience, city, skills
+app.get('/api/students', ...company, approved, h(async (req, res) => res.json(await query(`SELECT user_id, full_name, age, education, university, specialty, desired_experience, city, skills
   FROM profiles WHERE full_name IS NOT NULL ORDER BY user_id DESC LIMIT 60`))));
 app.post('/api/invite', ...company, approved, verified, h(async (req, res) => {
     const uid = num(req.body?.user_id), vid = num(req.body?.vacancy_id);
@@ -664,7 +783,7 @@ app.post('/api/invite', ...company, approved, verified, h(async (req, res) => {
 }));
 
 // Анкеты студентов не публичны. Компания должна быть одобрена; email здесь не раскрывается.
-app.get('/api/students/:id', auth, h(async (req, res) => {
+app.get('/api/students/:id', auth, (req, res, next) => req.role === 'admin' ? adminNetwork(req, res, next) : next(), h(async (req, res) => {
     const id = req.params.id === 'me' ? req.uid : num(req.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: 'Некорректный номер студента' });
     if (req.role === 'student' && id !== req.uid) return res.status(403).json({ error: 'Другие анкеты доступны только проверенным компаниям' });
@@ -682,9 +801,15 @@ app.get('/api/students/:id', auth, h(async (req, res) => {
 
 // ---------- резюме ----------
 // студент видит своё; компания — только резюме тех, кто откликнулся (или принял приглашение); админ — любое
-app.get('/api/resume/:id', auth, h(async (req, res) => {
+app.get('/api/resume/:id', auth, (req, res, next) => req.role === 'admin' ? adminNetwork(req, res, next) : next(), h(async (req, res) => {
+    if (!['student', 'company', 'admin'].includes(req.role))
+        return res.status(403).json({ error: 'Недоступно для вашего типа аккаунта' });
     const uid = req.params.id === 'me' ? req.uid : num(req.params.id);
+    if (!Number.isSafeInteger(uid) || uid < 1)
+        return res.status(400).json({ error: 'Некорректный номер студента' });
     if (req.role === 'student' && uid !== req.uid) return res.status(403).json({ error: 'Нет доступа к этому резюме' });
+    if (req.role === 'company' && !req.approved)
+        return res.status(403).json({ error: 'Просмотр резюме доступен после проверки компании', code: 'unapproved' });
     if (req.role === 'company' && !(await one(`SELECT 1 FROM applications a JOIN vacancies v ON v.id = a.vacancy_id
     WHERE a.user_id = $1 AND v.company_id = $2 AND ((a.direction = 'student_to_company' AND a.status <> 'declined') OR (a.direction = 'company_to_student' AND a.status = 'accepted')) LIMIT 1`, [uid, req.uid])))
         return res.status(403).json({ error: 'Резюме доступно после отклика студента или принятого приглашения' });
@@ -735,8 +860,10 @@ app.get('/api/dashboard', auth, h(async (req, res) => {
         kind: 'admin', stats: await one(`SELECT (SELECT COUNT(*)::int FROM users) AS users, (SELECT COUNT(*)::int FROM users WHERE role = 'student') AS students,
     (SELECT COUNT(*)::int FROM users WHERE role = 'company') AS companies, (SELECT COUNT(*)::int FROM users WHERE NOT email_verified) AS unverified,
     (SELECT COUNT(*)::int FROM vacancies) AS vacancies, (SELECT COUNT(*)::int FROM applications) AS applications,
-    (SELECT COUNT(*)::int FROM companies WHERE NOT approved) AS pending, (SELECT COUNT(*)::int FROM support_threads WHERE status = 'open') AS tickets`),
-        series: await series(`SELECT created_at::date AS day, COUNT(*) AS n FROM users GROUP BY 1`, 14)
+    (SELECT COUNT(*)::int FROM companies WHERE NOT approved) AS pending, (SELECT COUNT(*)::int FROM support_threads WHERE status = 'open') AS tickets,
+    (SELECT COUNT(DISTINCT user_id)::int FROM user_activity_daily WHERE activity_date = CURRENT_DATE) AS dau`),
+        series: await series(`SELECT created_at::date AS day, COUNT(*) AS n FROM users GROUP BY 1`, 14),
+        dau_series: await series(`SELECT activity_date AS day, COUNT(DISTINCT user_id) AS n FROM user_activity_daily GROUP BY 1`, 14)
     });
 }));
 
@@ -807,7 +934,7 @@ app.post('/api/chats/:id/messages', auth, approved, verified, h(async (req, res)
     const a = await chatApp(req, res); if (!a) return;
     const text = clean(req.body?.text, 1000);
     if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
-    if (!limit('cm:' + req.uid, 30, 60000)) return tooMany(res);
+    if (!await limit('cm:' + req.uid, 30, 60000)) return tooMany(res);
     let replyTo = null;
     if (req.body?.reply_to) { const r = await one('SELECT id FROM messages WHERE id = $1 AND application_id = $2', [num(req.body.reply_to), a.id]); replyTo = r ? r.id : null; }
     await query('INSERT INTO messages (application_id, sender_id, text, reply_to) VALUES ($1,$2,$3,$4)', [a.id, req.uid, text, replyTo]);
@@ -852,7 +979,7 @@ app.post('/api/support/messages', auth, h(async (req, res) => {
     if (req.role === 'admin') return res.status(403).json({ error: 'Используйте админ-панель' });
     const text = clean(req.body?.text, 1000);
     if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
-    if (!limit('sm:' + req.uid, 20, 60000)) return tooMany(res);
+    if (!await limit('sm:' + req.uid, 20, 60000)) return tooMany(res);
     const t = await one(`INSERT INTO support_threads (user_id) VALUES ($1) ON CONFLICT (user_id) DO UPDATE SET status = 'open', updated_at = now() RETURNING id`, [req.uid]);
     await query('INSERT INTO support_messages (thread_id, sender_id, is_staff, text, reply_to) VALUES ($1,$2,false,$3,$4)', [t.id, req.uid, text, await supReply(req.body, t.id)]);
     const who = (await one(`SELECT COALESCE(p.full_name, c.name, u.email) AS n FROM users u LEFT JOIN profiles p ON p.user_id = u.id LEFT JOIN companies c ON c.user_id = u.id WHERE u.id = $1`, [req.uid])).n;

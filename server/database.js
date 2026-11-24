@@ -48,8 +48,15 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  admin_2fa_verified BOOLEAN NOT NULL DEFAULT false,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '7 days')
 );
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS admin_2fa_verified BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+UPDATE sessions SET expires_at = created_at + interval '7 days' WHERE expires_at IS NULL;
+ALTER TABLE sessions ALTER COLUMN expires_at SET DEFAULT (now() + interval '7 days');
+ALTER TABLE sessions ALTER COLUMN expires_at SET NOT NULL;
 CREATE TABLE IF NOT EXISTS email_codes (
   id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   purpose TEXT NOT NULL, code_hash TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
@@ -150,7 +157,23 @@ CREATE INDEX IF NOT EXISTS idx_support_msgs ON support_messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_apps_user ON applications(user_id);
 CREATE INDEX IF NOT EXISTS idx_apps_vacancy ON applications(vacancy_id);
 CREATE INDEX IF NOT EXISTS idx_msgs_app ON messages(application_id);
-CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);`;
+CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, is_read);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key_hash TEXT PRIMARY KEY,
+  window_started_at TIMESTAMPTZ NOT NULL,
+  hits INTEGER NOT NULL CHECK (hits > 0),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_expires ON rate_limits(expires_at);
+
+CREATE TABLE IF NOT EXISTS user_activity_daily (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  activity_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  PRIMARY KEY (user_id, activity_date)
+);
+CREATE INDEX IF NOT EXISTS idx_user_activity_daily_date ON user_activity_daily(activity_date);
+`;
 
 const query = (text, params) => pool.query(text, params).then(r => r.rows);
 const one = (text, params) => query(text, params).then(r => r[0]);

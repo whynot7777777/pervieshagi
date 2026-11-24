@@ -37,7 +37,7 @@
             body: o.body ? JSON.stringify(o.body) : undefined
         });
         const d = await r.json().catch(() => ({}));
-        if (r.status === 401 && role()) { localStorage.removeItem('role'); if (d.error && d.error !== 'Требуется вход') sessionStorage.setItem('flash', d.error); if (!['home', 'vacancies', 'partners', 'help', 'vacancy', 'company-profile'].includes(page)) location.href = '/pages/login.html'; }
+        if (r.status === 401 && role() && page !== 'login' && d.code !== '2fa_required') { localStorage.removeItem('role'); if (d.error && d.error !== 'Требуется вход') sessionStorage.setItem('flash', d.error); if (!['home', 'vacancies', 'partners', 'help', 'vacancy', 'company-profile'].includes(page)) location.href = '/pages/login.html'; }
         if (!r.ok) { const e = new Error(d.error || (r.status === 404 || r.status === 405 ? 'Сервер не знает этого запроса — замените файлы в server/ и перезапустите сервер' : 'Что-то пошло не так')); e.code = d.code; throw e; }
         return d;
     }
@@ -430,12 +430,36 @@
             af.addEventListener('submit', async e => {
                 e.preventDefault();
                 const btn = af.querySelector('button.btn'); btn.disabled = true;
-                try {
-                    const d = await api(af.dataset.url, { method: 'POST', body: Object.fromEntries(new FormData(af)) });
+                const credentials = Object.fromEntries(new FormData(af));
+                const finishLogin = d => {
                     localStorage.setItem('role', d.role);
                     if (typeof d.codeSent === 'boolean') sessionStorage.setItem('verificationDelivery', d.codeSent ? 'sent' : 'failed');
                     location.href = d.verified ? afterAuth() : '/pages/verify.html';
-                } catch (err) { fail(err); btn.disabled = false; }
+                };
+                try {
+                    let d;
+                    try {
+                        d = await api(af.dataset.url, { method: 'POST', body: credentials });
+                    } catch (err) {
+                        if (err.code !== '2fa_required') throw err;
+                        const totp = prompt('Введите шестизначный код 2FA администратора:');
+                        if (totp === null) {
+                            btn.disabled = false;
+                            return;
+                        }
+                        if (!/^[0-9]{6}$/.test(totp.trim())) {
+                            throw new Error('Код 2FA должен содержать 6 цифр');
+                        }
+                        d = await api(af.dataset.url, {
+                            method: 'POST',
+                            body: { ...credentials, totp: totp.trim() }
+                        });
+                    }
+                    finishLogin(d);
+                } catch (err) {
+                    fail(err);
+                    btn.disabled = false;
+                }
             });
         }
 
@@ -1088,8 +1112,9 @@
             async function overview() {
                 const d = await api('/api/dashboard'), s = d.stats;
                 $('#aov').innerHTML = `<div class="dash" style="margin-top:0"><div class="stats4">${statc(s.users, 'Пользователей', .05, '#users', '')}${statc(s.students, 'Студентов', .1, '#users', 'student')}${statc(s.companies, 'Компаний', .15, '#users', 'company')}${statc(s.unverified, 'Не подтвердили email', .2, '#users', 'unverified')}
-          ${statc(s.vacancies, 'Вакансий', .25, '#vacancies')}${statc(s.applications, 'Откликов и приглашений', .3, '#vacancies')}${statc(s.pending, 'Компаний на одобрении', .35, '#users', 'pending')}${statc(s.tickets, 'Открытых обращений', .4, '#support')}</div>
-          <div class="card rise" style="--d:.45s"><h4>Регистрации за 14 дней</h4>${bars(d.series)}</div></div>`;
+          ${statc(s.vacancies, 'Вакансий', .25, '#vacancies')}${statc(s.applications, 'Откликов и приглашений', .3, '#vacancies')}${statc(s.pending, 'Компаний на одобрении', .35, '#users', 'pending')}${statc(s.tickets, 'Открытых обращений', .4, '#support')}${statc(s.dau, 'Активных сегодня', .45, '#users')}</div>
+          <div class="card rise" style="--d:.5s"><h4>Регистрации за 14 дней</h4>${bars(d.series)}</div>
+          <div class="card rise" style="--d:.55s"><h4>Активные пользователи за 14 дней</h4>${bars(d.dau_series)}</div></div>`;
                 watchCounts($('#aov'));
             }
             async function users() {
