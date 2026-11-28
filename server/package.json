@@ -1,0 +1,17 @@
+{
+  "name": "pervyj-shag",
+  "version": "2.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --env-file=.env index.js",
+    "seed": "node --env-file=.env seed.js",
+    "seed:clear": "node --env-file=.env seed.js --clear"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "express": "^4.19.2",
+    "nodemailer": "^6.9.15",
+    "pg": "^8.13.0"
+  }
+}
