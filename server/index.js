@@ -81,7 +81,39 @@ const stats = async () => {
     return statsCache.v;
 };
 // страница с подстановкой адреса сайта; на главной — реальные цифры прямо в HTML (их видят и роботы)
-const render = async name => {
+const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[ch]));
+
+const seoText = (...values) => values
+    .filter(Boolean)
+    .join(' · ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 160);
+
+const applyEntitySeo = (html, { title, description, canonical }) => {
+    const safeTitle = escapeHtml(title);
+    const safeDescription = escapeHtml(description);
+    const safeCanonical = escapeHtml(canonical);
+
+    html = html.replace(/<title>[\s\S]*?<\/title>/i, () => `<title>${safeTitle}</title>`);
+    html = html.replace(/<meta\s+name=["']description["'][^>]*>/i,
+        () => `<meta name="description" content="${safeDescription}">`);
+
+    const tags = [
+        `<link rel="canonical" href="${safeCanonical}">`,
+        `<meta property="og:title" content="${safeTitle}">`,
+        `<meta property="og:description" content="${safeDescription}">`,
+        `<meta property="og:url" content="${safeCanonical}">`,
+        '<meta property="og:type" content="website">'
+    ].join('\n    ');
+
+    return html.replace(/<\/head>/i, () => `    ${tags}\n</head>`);
+};
+
+const render = async (name, seo = null) => {
     const home = name === 'index.html';
     const parts = {
         ...layout,
@@ -104,15 +136,46 @@ const render = async name => {
         let st = null; try { st = await stats(); } catch { }
         if (st) for (const [k, v] of Object.entries(st)) html = html.replace(new RegExp(`(id="n-${k}" data-count=")0(">)0(<)`), `$1${v}$2${v}$3`);
     }
+    if (seo) html = applyEntitySeo(html, seo);
     return html;
 };
 app.get('/pages/index.html', (req, res) => res.redirect(301, '/'));
 app.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${SITE}/sitemap.xml\n`));
-app.get('/sitemap.xml', (req, res) => {
+app.get('/sitemap.xml', h(async (req, res) => {
     const urls = [['/', 'index.html'], ...['partners', 'vacancies', 'help', 'about', 'directions', 'faq'].map(name => ['/pages/' + name + '.html', name + '.html'])];
-    res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-        urls.map(([u, f]) => `  <url><loc>${SITE}${u}</loc><lastmod>${fs.statSync(path.join(PUBLIC, 'pages', f)).mtime.toISOString().slice(0, 10)}</lastmod></url>`).join('\n') + '\n</urlset>\n');
-});
+
+    const vacancies = await query(
+        'SELECT id FROM vacancies WHERE is_active = true ORDER BY id DESC'
+    );
+    for (const vacancy of vacancies) {
+        urls.push(['/pages/vacancy.html?id=' + encodeURIComponent(vacancy.id), null]);
+    }
+
+    const companies = await query(`
+        SELECT c.user_id
+        FROM companies c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.approved = true
+          AND NOT COALESCE(u.is_blocked, false)
+          AND u.role = 'company'
+        ORDER BY lower(c.name), c.user_id
+    `);
+    for (const company of companies) {
+        urls.push(['/pages/company-profile.html?id=' + encodeURIComponent(company.user_id), null]);
+    }
+
+    const entries = urls.map(([url, file]) => {
+        const lastmod = file
+            ? `<lastmod>${fs.statSync(path.join(PUBLIC, 'pages', file)).mtime.toISOString().slice(0, 10)}</lastmod>`
+            : '';
+        return `  <url><loc>${SITE}${url}</loc>${lastmod}</url>`;
+    });
+
+    res.type('application/xml').send(
+        `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+        entries.join('\n') + '\n</urlset>\n'
+    );
+}));
 app.get(['/', '/pages/:name'], h(async (req, res, next) => {
     const name = req.params.name ? path.basename(req.params.name) : 'index.html';
     if (!name.endsWith('.html') || !fs.existsSync(path.join(PUBLIC, 'pages', name))) return next();
@@ -120,9 +183,60 @@ app.get(['/', '/pages/:name'], h(async (req, res, next) => {
         const allowed = (process.env.ADMIN_ALLOWED_IPS || '').split(',').map(x => x.trim()).filter(Boolean);
         if (!allowed.includes(req.ip)) return res.status(404).type('text').send('Not found');
     }
+
+    let seo = null;
+
+    if (name === 'vacancy.html') {
+        const id = num(req.query.id);
+        if (!Number.isSafeInteger(id) || id < 1) return res.sendStatus(404);
+
+        const vacancy = await one(
+            `SELECT id, title, description, city, category
+             FROM vacancies
+             WHERE id = $1 AND is_active = true`,
+            [id]
+        );
+
+        if (!vacancy) return res.sendStatus(404);
+
+        const title = `${vacancy.title} — Первый опыт`;
+        seo = {
+            title,
+            description: seoText(vacancy.title, vacancy.description, vacancy.city, vacancy.category)
+                || `Вакансия ${vacancy.title} на платформе «Первый опыт».`,
+            canonical: `${SITE}/pages/vacancy.html?id=${encodeURIComponent(id)}`
+        };
+    }
+
+    if (name === 'company-profile.html') {
+        const id = num(req.query.id);
+        if (!Number.isSafeInteger(id) || id < 1) return res.sendStatus(404);
+
+        const company = await one(
+            `SELECT c.user_id, c.name, c.industry, c.city, c.description
+             FROM companies c
+             JOIN users u ON u.id = c.user_id
+             WHERE c.user_id = $1
+               AND c.approved = true
+               AND NOT COALESCE(u.is_blocked, false)
+               AND u.role = 'company'`,
+            [id]
+        );
+
+        if (!company) return res.sendStatus(404);
+
+        const title = `${company.name} — Первый опыт`;
+        seo = {
+            title,
+            description: seoText(company.name, company.description, company.industry, company.city)
+                || `Профиль компании ${company.name} на платформе «Первый опыт».`,
+            canonical: `${SITE}/pages/company-profile.html?id=${encodeURIComponent(id)}`
+        };
+    }
+
     if (!PUBLIC_PAGES.has(name)) res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Cache-Control', 'no-cache');
-    res.type('html').send(await render(name));
+    res.type('html').send(await render(name, seo));
 }));
 app.use(express.static(PUBLIC, {
     setHeaders: (res, p) => {

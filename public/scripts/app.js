@@ -729,11 +729,47 @@
             root.querySelector('[data-retry]')?.addEventListener('click', retry);
         };
         const facts = rows => `<dl class="entity-facts">${rows.filter(([, v]) => v != null && String(v).trim()).map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>`;
+        const setPageMeta = (title, description, id) => {
+            document.title = title;
+            const cleanDescription = String(description || '')
+                .replace(/<[^>]*>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 160) || 'Возможности для студентов и начинающих специалистов на платформе «Первый опыт».';
+
+            const setMeta = (selector, property, value, create) => {
+                let el = document.head.querySelector(selector);
+                if (!el) {
+                    el = document.createElement('meta');
+                    create(el);
+                    document.head.appendChild(el);
+                }
+                el.setAttribute(property, value);
+            };
+
+            const canonical = new URL(location.pathname, location.origin);
+            canonical.searchParams.set('id', String(id));
+            canonical.hash = '';
+
+            const canonicalLink = document.head.querySelector('link[rel="canonical"]') ||
+                document.head.appendChild(Object.assign(document.createElement('link'), { rel: 'canonical' }));
+            canonicalLink.href = canonical.href;
+
+            setMeta('meta[name="description"]', 'content', cleanDescription, el => el.name = 'description');
+            setMeta('meta[property="og:title"]', 'content', title, el => el.setAttribute('property', 'og:title'));
+            setMeta('meta[property="og:description"]', 'content', cleanDescription, el => el.setAttribute('property', 'og:description'));
+            setMeta('meta[property="og:url"]', 'content', canonical.href, el => el.setAttribute('property', 'og:url'));
+            setMeta('meta[property="og:type"]', 'content', 'website', el => el.setAttribute('property', 'og:type'));
+        };
         async function loadVacancy() {
             detailRoot.setAttribute('aria-busy', 'true');
             try {
                 const v = await api((me ? '/api/vacancies/' : '/api/public/vacancies/') + entityId);
-                document.title = `${v.title} — Первый опыт`;
+                setPageMeta(
+                    `${v.title} — Первый опыт`,
+                    [v.description, v.city, v.category].filter(Boolean).join(' · '),
+                    v.id
+                );
                 const isStudent = me?.role === 'student', active = v.is_active !== false;
                 const action = !me ? '<button class="btn primary" id="vacancy-apply">Откликнуться</button>' : isStudent ? `<button class="btn ${v.applied || !active ? '' : 'primary'}" id="vacancy-apply" ${v.applied || !active ? 'disabled' : ''}>${v.applied ? 'Отклик отправлен' : !active ? 'Вакансия закрыта' : 'Откликнуться'}</button>` : '<p class="muted">Откликнуться можно с аккаунта студента.</p>';
                 detailRoot.innerHTML = `<a class="back-link" href="/pages/vacancies.html">← Все вакансии</a>
@@ -771,7 +807,11 @@
             profileRoot.setAttribute('aria-busy', 'true');
             try {
                 const d = await api('/api/public/companies/' + entityId), c = d.company;
-                document.title = `${c.name} — Первый опыт`;
+                setPageMeta(
+                    `${c.name} — Первый опыт`,
+                    [c.description, c.industry, c.city].filter(Boolean).join(' · '),
+                    entityId
+                );
                 const website = c.website && safeWebsite(c.website);
                 profileRoot.innerHTML = `<a class="back-link" href="/pages/vacancies.html">← Все вакансии</a><div class="entity-heading"><span class="eyebrow">Компания на платформе</span><h1>${esc(c.name)}</h1><p class="entity-subtitle">${[c.industry, c.city].filter(Boolean).map(esc).join(' · ')}</p></div>
           <div class="company-summary card"><h2>О компании</h2><div class="prose">${esc(c.description || 'Компания пока не добавила описание.')}</div>${website ? `<a class="text-link external-link" href="${esc(website)}" target="_blank" rel="noopener noreferrer">Сайт компании  </a>` : ''}</div>
