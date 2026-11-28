@@ -34,3 +34,11 @@ logs/
 
 # Кэш
 .cache/
+
+# Резервные копии файлов проекта — не отправлять в Git
+*.backup*
+*.bak*
+*.old
+*.orig
+*.save
+.env.backup*
